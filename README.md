@@ -2,8 +2,7 @@
 
 This repository contains the code developed as part of the research project "Investigating the Application of Recurrent Neural Networks and Blocked Cross-Validation for Modelling Conventional Drinking Water Treatment Processes".
 
-
-The files in this repository are as follows:
+**The files in this repository are as follows:**
 
 data_import_mgmt.py - For importing data from their original .csv files into Python-compatible formats.
 
