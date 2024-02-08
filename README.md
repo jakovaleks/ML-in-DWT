@@ -4,7 +4,7 @@ This repository contains the code developed as part of the research project **"I
 
 A _synthetic_ data set representing one week of operation, formatted in the same way as the original data used for this project, can be found in `Data/stn_csv/stn_2401.csv`. You can test this code out using by running `example.py`, which will:
 1. Merge all .csv files in `Data/stn_csv` into a single .npy file.
-2. Remove anomalous data (based on the criteria described in `data_cleaning_mgmt.py`.
+2. Remove anomalous data (based on the criteria described in `data_cleaning_mgmt.py`).
 3. Create PyTorch tensors for model training and evaluation.
 4. Quickly train an RNN on the training portion of the data.
 5. Evaluate the RNN's performance on the production portion of the data.
