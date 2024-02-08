@@ -1,0 +1,2 @@
+Model                                                RMSE     MAE
+GRU_BCV_input-45x7_hidden-2x32_RMSE-0.2423.pt        0.1390   0.1131

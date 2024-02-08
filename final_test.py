@@ -2,94 +2,112 @@
 
 import torch
 import os
-import natsort
 import numpy as np
-from data_torch_mgmt import func_batcher
+from data_torch_mgmt import func_batcher, func_unnormalize_variables
 from torch import nn
 
 # File locations
-f_root = "/home/user1/Documents/ML_DWT/"
 f_data = "Data/Torch/"
 f_model = "Models/"
-f_output = "Final Test/"
-fileloc_data = f"{f_root}{f_data}"
-fileloc_model = f"{f_root}{f_model}"
-fileloc_output = f"{f_root}{f_output}"
     
 # Torch parameters
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 torch.set_default_dtype(torch.float64)
 torch.set_default_tensor_type(torch.DoubleTensor)
 
-# Define tensor and batch sizes
-total_dims = 7
-input_steps = 30
-output_steps = 15
-batch_size = 64
 
-# Load production data set
-prod_data = torch.load(fileloc_data + 'PROD_2009-2111_45x7_n.pt')
-data_in = prod_data[:, :input_steps, :].to(device)
-true_out = prod_data[:, input_steps:, 0].to(device)
-examples = len(prod_data)
-
-# Load names of all the models to be tested
-model_tags = ['MLP_BCV', 'LSTM_BCV', 'GRU_BCV', 'MLP_HO', 'LSTM_HO', 'GRU_HO']
-# We have six different model types (the above tags, MLP/LSTM/GRU trained with BCV/HO)
-# and 9 sizes of each model
-model_names = np.empty((6, 9), dtype=object)
-for i, tag in enumerate(model_tags):
-    j = 0
-    for name in os.listdir(fileloc_model + tag):
-        if name.endswith('.pt'):
-            model_names[i, j] = name
-            j += 1
-    model_names[i, :] = natsort.natsorted(model_names[i, :])
-
-# Function to calculate loss in NTU
-def func_loss(self, preds, actual, testing=False):
-    loss = nn.MSELoss()
-    loss_MAE = nn.L1Loss(reduction='none')
-    # to avoid having to load the original data file every time to find
-    # the maximum turbidity in the data set, simply find it once and 
-    # paste it into here for future reuse
-    turb_max = 10.0200002193451 
-    # Since the minimum turbidity is 0, the un-normalization calculation
-    # is simplified to simply multiplying the values by the maximum
-    # turbidity in the original data set
-    rmse = torch.sqrt(loss(turb_max * preds, turb_max * actual)).to(device)
-    mae = loss_MAE(turb_max * preds, turb_max * actual)
-    return rmse, mae
-
-#%% Production set test
-# Produces a .txt file with the RMSE and MAE of each model on the production set
-for i, tag in enumerate(model_tags):
-    for model in model_names[i, :]:
-        mdl = torch.load(fileloc_model + tag + '/' + model).to(device)
-        loss_tst, residuals_tst = [], []
-        batch_gen = func_batcher(batch_size, examples)
+# Class to test the model
+class model_tester:
+    def __init__(self, f_data, f_model):
         
-        with torch.no_grad():
-            # Iterate through all the batches in this epoch
-            for bat in batch_gen:
-                if 'MLP' in model:
-                    x_bat, y_bat = torch.reshape(data_in[bat, :, :], (batch_size, input_steps * total_dims)), true_out[bat, :]
-                    preds_tst = (mdl.forward(x_bat)).to(device)
-                    rmse_tst, mae_tst = func_loss(preds_tst, y_bat)
-                else:
-                    x_bat, y_bat = data_in[bat, :, :], true_out[bat, :]
-                    mdl.teacher_forcing_ratio = 0
-                    preds_tst = (mdl.forward(x_bat, y_bat)).to(device)
-                    rmse_tst, mae_tst = func_loss(preds_tst, y_bat.view((batch_size, output_steps, 1)))
+        # Specify folders locations
+        self.f_data = f_data
+        self.f_model = f_model
+        
+        
+    def initialize(self, 
+                   production_data_filename,
+                   master_values_filename, 
+                   batch_size=64,
+                   output_steps=15
+                   ):
+        
+        # Define tensor and batch sizes
+        self.batch_size = batch_size
+        self.output_steps = output_steps
+        
+        # Load production data set
+        prod_data = torch.load(self.f_data + production_data_filename)
+        self.examples, self.total_steps, self.total_dims = prod_data.shape
+        self.input_steps = self.total_steps - self.output_steps
+        self.data_in = prod_data[:, :self.input_steps, :].to(device)
+        self.true_out = prod_data[:, self.input_steps:, 0].to(device)
+        self.examples = len(prod_data)
+        self.master_vals = torch.load(f_data + master_values_filename)
+        print(f'Evaluating models on {f_data}{production_data_filename}')
+        
+    def test(self):
+
+        # Load all the models in the f_model directory
+        model_names = [i for i in os.listdir(f_model) if '.pt' in i]
+        
+        # Iterate through the models and test each one
+        for model_name in model_names:
+            mdl = torch.load(f_model + model_name).to(device)
+            loss_tst, residuals_tst = [], []
+            batch_gen = func_batcher(self.batch_size, self.examples)
+
+            with torch.no_grad():
+                # Iterate through all the batches in this epoch
+                for bat in batch_gen:
+                    if 'MLP' in model_name:
+                        x_bat, y_bat = torch.reshape(self.data_in[bat, :, :], (self.batch_size, self.input_steps * self.total_dims)), self.true_out[bat, :]
+                        preds_tst = (mdl.forward(x_bat)).to(device)
+                        rmse_tst, mae_tst = self.func_loss(preds_tst, y_bat, self.master_vals[0, :])
+                    else:
+                        x_bat, y_bat = self.data_in[bat, :, :], self.true_out[bat, :]
+                        mdl.teacher_forcing_ratio = 0
+                        preds_tst = (mdl.forward(x_bat, y_bat)).to(device)
+                        rmse_tst, mae_tst = self.func_loss(preds_tst, y_bat.view((self.batch_size, self.output_steps, 1)), self.master_vals[0, :])
+                    loss_tst.append(rmse_tst.tolist())
+                    residuals_tst.append(mae_tst.tolist())
                 loss_tst.append(rmse_tst.tolist())
                 residuals_tst.append(mae_tst.tolist())
                 
-        final_rmse = np.mean(loss_tst)
-        final_mae = np.mean(residuals_tst)
-        
-        with open(f"{fileloc_output}RMSE.txt", "a") as f:
-            f.write(f"{tag:<11}{model:<53}{final_rmse:.4f}   {final_mae:.4f}\n")
-        np.save(f"{fileloc_output}{tag}_{model}_residuals", np.array(residuals_tst).reshape((-1, output_steps)))
-        
-        print(f'Done {tag}_{model}.')
+            final_rmse = np.mean(loss_tst)
+            final_mae = np.mean(residuals_tst)
             
+            if os.path.exists("_production_summary.txt") == False:
+                with open("_production_summary.txt", "x") as f:
+                    f.write("Model" + " "*48 + "RMSE     MAE\n")
+            with open("_production_summary.txt", "a") as f:
+                f.write(f"{model_name:<53}{final_rmse:.4f}   {final_mae:.4f}\n")
+            
+            print(f'Evaluted {model_name}: production set RMSE = {final_rmse:.4f} NTU, MAE = {final_mae:.4f} NTU.')
+
+    # Function to calculate loss in NTU
+    def func_loss(self, preds, actual, master, testing=True):
+        loss = nn.MSELoss()
+        mae = None
+        # If testing we also want MAE loss, otherwise only MSE
+        if testing: loss_MAE = nn.L1Loss(reduction='none')
+        # Get un-normalized values
+        preds_real = func_unnormalize_variables(preds, master)
+        actual_real = func_unnormalize_variables(actual, master)
+        # Compute RMSE in original units (real space - NTU in the case of turbidity))
+        rmse = torch.sqrt(loss(preds_real, actual_real)).to(device)
+        if testing: mae = loss_MAE(preds_real, actual_real)
+        return rmse, mae
+
+#%% MAIN
+
+if __name__ == '__main__':
+    tester = model_tester(f_data, f_model)
+    tester.initialize(
+                      production_data_filename="TRAIN_1707-2009_45x7_n.pt",
+                      master_values_filename="norm_values_1707-2009_45x7.pt",
+                      batch_size=64,
+                      output_steps=15
+                      )
+    tester.test()
+    

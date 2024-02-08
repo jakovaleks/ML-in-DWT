@@ -14,9 +14,8 @@
 import numpy as np
 
 # File locations
-f_root = "/home/user1/Documents/ML_DWT/"
 f_data = "Data/"
-file_npy_dec = f_root + f_data + "stn_1707_2111_decimal.npy"
+file_npy_dec = f_data + "stn_1707-2111_decimal.npy"
 # Append "_mod" for modified file after cleaning
 file_npy_mod = file_npy_dec[:file_npy_dec.rfind('.')] + '_mod' + file_npy_dec[file_npy_dec.rfind('.'):]
 
@@ -52,6 +51,7 @@ def func_clean_data(file_npy_dec, file_npy_mod):
     Mod_1.func_mod_cond()       # col 3
     Mod_1.func_mod_ph()         # cols 4, 6, 7
     Mod_1.func_mod_af_turb()    # cols 8, 10, 12
+    Mod_1.func_mod_pax()        # col 15
     Mod_1.func_mod_inflow()     # col 20
     # Alum and TSS are fine and require no modification
     # Save the modified file
@@ -82,10 +82,10 @@ class data_modifier:
         self.data = self.data[np.logical_not(self.del_idx)]
         # Save modified data
         np.save(self.file, self.data)
-        print(f'\nFile modified and saved to {f_root + f_data + file_npy_mod}')
+        print(f'\nFile modified and saved to {f_data + file_npy_mod}')
 
 # Adjust the temperature data to remove anomalous spikes and sensor errors
-    def func_mod_temp(self, delta_threshold=0.5):
+    def func_mod_temp(self, delta_threshold=0.1):
         # Make a vector called delta which stores the difference between all
         # adjacent temperature values in the data set
         delta = self.data[1:, 1] - self.data[:-1, 1]
@@ -93,7 +93,7 @@ class data_modifier:
         delta = np.abs(delta)
         # Mark rows for deletion if either:
         #   a) the difference between the temperature at this time step and the previous
-        #      time step exceeds a given threshold (i.e. 0.5 degrees C), OR
+        #      time step exceeds a given threshold (i.e. 0.1 degrees C), OR
         #   b) the temperature does not change at all from the previous time step
         #      (given the number of decimal places recorded, this likely indicates
         #      a sensor error)
@@ -102,7 +102,7 @@ class data_modifier:
         print(f'Temperature evaluated; {np.sum(self.del_idx > 0)} total rows marked for deletion.')
 
 # Adjust the influent turbidity data to remove spikes and sensor errors
-    def func_mod_turb(self, delta_threshold=50, detection_limit=100):
+    def func_mod_turb(self, delta_threshold=2, detection_limit=100):
         # Make a vector called delta which stores the difference between all
         # adjacent turbidity values in the data set
         delta = self.data[1:, 2] - self.data[:-1, 2]
@@ -110,7 +110,7 @@ class data_modifier:
         delta = np.abs(delta)
         # Mark rows for deletion if either:
         #   a) the difference between the turbidity at this time step and the previous
-        #      time step exceeds a given threshold (i.e. 50 NTU), OR
+        #      time step exceeds a given threshold (i.e. 2 NTU), OR
         #   b) the turbidity does not change at all from the previous time step AND
         #      it is NOT at the detection limit of 100 NTU (given the number of decimal 
         #      places recorded, this likely indicates a sensor error)
@@ -119,7 +119,7 @@ class data_modifier:
         print(f'Turbidity evaluated; {np.sum(self.del_idx > 0)} total rows marked for deletion.')
 
 # Adjust the conductivity data to remove anomalous drops and spikes
-    def func_mod_cond(self, delta_threshold=25, detection_limit=200):
+    def func_mod_cond(self, delta_threshold=5, detection_limit=200):
         # Make a vector called delta which stores the difference between all
         # adjacent conductivity values in the data set
         delta = self.data[1:, 3] - self.data[:-1, 3]
@@ -127,7 +127,7 @@ class data_modifier:
         delta = np.abs(delta)
         # Mark rows for deletion if either:
         #   a) the difference between the conductivity at this time step and the previous
-        #      time step exceeds a given threshold (i.e. 25 uS/cm), OR
+        #      time step exceeds a given threshold (i.e. 5 uS/cm), OR
         #   b) the conductivity does not change at all from the previous time step AND
         #      it is NOT at the detection limit of 200 uS/cm (given the number of decimal 
         #      places recorded, this likely indicates a sensor error)
@@ -136,7 +136,7 @@ class data_modifier:
         print(f'Conductivity evaluated; {np.sum(self.del_idx > 0)} total rows marked for deletion.')
         
 # Adjust the pH data to remove anomalous drops and spikes
-    def func_mod_ph(self, delta_thresholds=(1.5, 0.6, 0.6), min_zero_delta_steps=3):
+    def func_mod_ph(self, delta_thresholds=(0.1, 0.3, 0.3), min_zero_delta_steps=3):
         # Make a vector called delta which stores the difference between all
         # adjacent pH values in the data set
         delta = np.empty((min_zero_delta_steps), dtype=object)
@@ -150,8 +150,8 @@ class data_modifier:
             delta[i] = np.abs(delta[i])
         # Mark rows for deletion if either:
         #   a) the difference between the pH at this time step and the previous
-        #      time step exceeds a given threshold (i.e. 1.5 in the influent
-        #      and 0.6 in the coagulation basin), OR
+        #      time step exceeds a given threshold (i.e. 0.1 in the influent
+        #      and 0.3 in the coagulation basin), OR
         #   b) the pH does not change at all for some number of consecutive time
         #      steps (min_zero_delta_steps, i.e. 3)
         del_new = ((delta[0] > delta_thresholds).any(axis=1) | (np.sum(delta[:]) == 0).any(axis=1))
@@ -159,7 +159,7 @@ class data_modifier:
         print(f'pH evaluated; {np.sum(self.del_idx > 0)} total rows marked for deletion.')
         
 # Adjust the streaming current data to remove anomalous drops and spikes
-    def func_mod_scm(self, delta_threshold=105):
+    def func_mod_scm(self, delta_threshold=40):
         # Make a vector called delta which stores the difference between all
         # adjacent SCM values in the data set
         delta = self.data[1:, 5] - self.data[:-1, 5]
@@ -167,7 +167,7 @@ class data_modifier:
         delta = np.abs(delta)
         # Mark rows for deletion if either:
         #   a) the difference between the streaming current at this time step and the
-        #      previous time step exceeds a given threshold (i.e. 105), OR
+        #      previous time step exceeds a given threshold (i.e. 40), OR
         #   b) the streaming current does not change at all from the previous time
         #      step (given the number of decimal places recorded, this likely
         #      indicates a sensor failure)
@@ -223,13 +223,14 @@ class data_modifier:
         self.del_idx += del_new
         print(f'Inflow evaluated; {np.sum(self.del_idx > 0)} total rows marked for deletion.')
 
-# Adjust the Actiflo basin 2 flow data to replace erroneous low flow rates
+# Adjust the Actiflo basin flow data to replace erroneous low flow rates
 # with zeros (i.e. where neighbouring time steps both report zero flow)
     def func_mod_af_flow(self):
-        data_plus1 = np.insert(self.data[:, -2], 0, 0)
-        data_plus1 = np.delete(data_plus1, -1)
-        data_minus1 = np.insert(self.data[:, -2], -1, 0)
-        data_minus1 = np.delete(data_minus1, 0)
-        self.af_flow_idx = ((self.data[:, -2] > 0) & ((data_plus1 == 0) & (data_minus1 == 0)))
-        self.data[self.af_flow_idx, -2] = 0
-        print(f'Actiflo basin 2 flow evaluated; {np.sum(self.af_flow_idx)} flow data points will be set to zero.')
+        for basin in [3, 2, 1]:
+            data_plus1 = np.insert(self.data[:, -basin], 0, 0)
+            data_plus1 = np.delete(data_plus1, -1)
+            data_minus1 = np.insert(self.data[:, -basin], -1, 0)
+            data_minus1 = np.delete(data_minus1, 0)
+            self.af_flow_idx = ((self.data[:, -basin] > 0) & ((data_plus1 == 0) & (data_minus1 == 0)))
+            self.data[self.af_flow_idx, -2] = 0
+            print(f'Actiflo basin {4 - basin} flow evaluated; {np.sum(self.af_flow_idx)} flow data points will be set to zero.')

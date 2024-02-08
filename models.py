@@ -2,7 +2,6 @@
 
 import torch
 import random
-import lmu
 from torch import nn
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'

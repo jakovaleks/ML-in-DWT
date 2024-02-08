@@ -6,9 +6,8 @@ import datetime as dt
 import os, fnmatch
 
 # File locations
-f_root = "/home/user1/Documents/ML_DWT/"
 f_data = "Data/"
-f_csv = f"{f_root}{f_data}stn_csv/"
+f_csv = f"{f_data}stn_csv/"
 
 # The data are stored as .csv files from each month;
 # For example, stn_1809.csv is the data for September 2018.
@@ -19,7 +18,7 @@ list_csv = sorted(fnmatch.filter(os.listdir(f_csv), "stn_*.csv"))
 start_date = list_csv[0][list_csv[0].find('_')+1:list_csv[0].find('.')]
 end_date = list_csv[-1][list_csv[-1].find('_')+1:list_csv[-1].find('.')]
 # Data ranges from July 2017 to November 2021
-file_npy = f"{f_root}{f_data}stn_{start_date}-{end_date}.npy"
+file_npy = f"{f_data}stn_{start_date}-{end_date}.npy"
 # Append "_decimal" for the modified file with decimal timestamps
 file_npy_dec = file_npy[:file_npy.rfind('.')] + '_decimal' + file_npy[file_npy.rfind('.'):]
 

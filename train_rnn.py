@@ -6,14 +6,11 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 from torch import optim, nn
-from data_torch_mgmt import func_loader, func_batcher
+from data_torch_mgmt import func_loader, func_batcher, func_unnormalize_variables
 
 # File locations
-f_root = "/home/user1/Documents/ML_DWT/"
 f_data = "Data/Torch/"
 f_model = "Models/"
-fileloc_data = f"{f_root}{f_data}"
-fileloc_model = f"{f_root}{f_model}"
     
 # Torch parameters
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -23,7 +20,7 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 
 # Class to run the training procedure
 class rnn_trainer:
-    def __init__(self, rnn_type, fileloc_data, fileloc_model):
+    def __init__(self, rnn_type, f_data, f_model):
         
         # Check rnn_type is allowed and load data
         rnn_list = ['LSTM', 'GRU']
@@ -31,12 +28,13 @@ class rnn_trainer:
         self.rnn_type = rnn_type
         
         # Specify folders to load/save data/models to/from
-        self.fileloc_data = fileloc_data
-        self.fileloc_model = fileloc_model
+        self.f_data = f_data
+        self.f_model = f_model
     
     # Load the training data and initialize the model
     def initialize(self,
                    training_data_filename,
+                   master_values_filename,
                    batch_size=64,
                    output_steps=15,
                    num_training_blocks=12,
@@ -46,6 +44,7 @@ class rnn_trainer:
                    ):
         
         self.training_data_filename = training_data_filename
+        self.master_values_filename = master_values_filename
         self.batch_size = batch_size
         self.output_steps = output_steps
         self.num_training_blocks = num_training_blocks
@@ -54,7 +53,7 @@ class rnn_trainer:
         self.teacher_forcing_ratio = teacher_forcing_ratio
         
         # Load the data as a 4D array of size (blocks, examples_per_block, steps, variables)
-        self.xy = func_loader(self.fileloc_data, self.training_data_filename, self.num_training_blocks + 2)
+        self.xy = func_loader(self.f_data, self.training_data_filename, self.num_training_blocks + 2)
         _, self.points_per_block, self.total_steps, self.total_dims = self.xy.shape
         self.input_steps = self.total_steps - self.output_steps
         
@@ -78,6 +77,9 @@ class rnn_trainer:
         
         # Load a model based on the above parameters
         self.mdl = models.set_model_type(self.rnn_type, self.mdl_parameters).to(device)
+        
+        # Load master (unnormalized) values for model evaluation
+        self.master_vals = torch.load(self.f_data + self.master_values_filename)
         
     # Train the model
     def train(self,
@@ -174,7 +176,7 @@ class rnn_trainer:
                     
                     # Calculate training loss on this batch
                     # We transform it back to NTU for meaningful interpretation!
-                    rmse_trn, _ = self.func_loss(preds_trn, y_bat[:, :, 0].view((self.batch_size, self.output_steps, 1)))
+                    rmse_trn, _ = self.func_loss(preds_trn, y_bat[:, :, 0].view((self.batch_size, self.output_steps, 1)), self.master_vals[0, :])
                                         
                     # Save the training loss to the list
                     loss_iter.append(rmse_trn.tolist())
@@ -203,7 +205,7 @@ class rnn_trainer:
                     for bat in batch_gen:
                         x_bat, y_bat = x_val[bat, :, :], y_val[bat, :]
                         preds_val = (self.mdl.forward(x_bat, y_bat)).to(device)
-                        rmse_val, _ = self.func_loss(preds_val, y_bat.view((self.batch_size, self.output_steps, 1)))
+                        rmse_val, _ = self.func_loss(preds_val, y_bat.view((self.batch_size, self.output_steps, 1)), self.master_vals[0, :])
                         loss_iter.append(rmse_val.tolist())
                         
                     self.loss_val.append(np.mean(loss_iter))
@@ -282,7 +284,7 @@ class rnn_trainer:
             for bat in batch_gen:
                 x_bat, y_bat = x_tst[bat, :, :], y_tst[bat, :]
                 preds_tst = (self.mdl.forward(x_bat, y_bat)).to(device)
-                rmse_tst, mae_tst = self.func_loss(preds_tst, y_bat.view((self.batch_size, self.output_steps, 1)), testing=True)
+                rmse_tst, mae_tst = self.func_loss(preds_tst, y_bat.view((self.batch_size, self.output_steps, 1)), self.master_vals[0, :], testing=True)
                 loss_tst.append(rmse_tst.tolist())
                 self.residuals_tst.append(mae_tst.tolist())
         
@@ -293,20 +295,17 @@ class rnn_trainer:
     
     
     # Function to calculate loss in NTU
-    def func_loss(self, preds, actual, testing=False):
+    def func_loss(self, preds, actual, master, testing=False):
         loss = nn.MSELoss()
         mae = None
         # If testing we also want MAE loss, otherwise only MSE
         if testing: loss_MAE = nn.L1Loss(reduction='none')
-        # to avoid having to load the original data file every time to find
-        # the maximum turbidity in the data set, simply find it once and 
-        # paste it into here for future reuse
-        turb_max = 10.0200002193451 
-        # Since the minimum turbidity is 0, the un-normalization calculation
-        # is simplified to simply multiplying the values by the maximum
-        # turbidity in the original data set
-        rmse = torch.sqrt(loss(turb_max * preds, turb_max * actual)).to(device)
-        if testing: mae = loss_MAE(turb_max * preds, turb_max * actual)
+        # Get un-normalized values
+        preds_real = func_unnormalize_variables(preds, master)
+        actual_real = func_unnormalize_variables(actual, master)
+        # Compute RMSE in original units (real space - NTU in the case of turbidity))
+        rmse = torch.sqrt(loss(preds_real, actual_real)).to(device)
+        if testing: mae = loss_MAE(preds_real, actual_real)
         return rmse, mae
     
     
@@ -332,14 +331,14 @@ class rnn_trainer:
                          )
         
         # Save the model parameters as a .pt file
-        torch.save(self.mdl, f"{self.fileloc_model}{modelname}.pt")
+        torch.save(self.mdl, f"{self.f_model}{modelname}.pt")
         
         # Save a log detailing the characteristics of the model, its performance,
         # and the characteristics of the optimizer as a .txt file
-        with open(f"{self.fileloc_model}{modelname}.txt", 'w') as f:
+        with open(f"{self.f_model}{modelname}.txt", 'w') as f:
             f.write(modelname)
-            f.write(f"\nData set: {self.fileloc_data}{self.training_data_filename}")
-            f.write(f"\nOutput model: {self.fileloc_model}{modelname}.pt")
+            f.write(f"\nData set: {self.f_data}{self.training_data_filename}")
+            f.write(f"\nOutput model: {self.f_model}{modelname}.pt")
             f.write("\n\nModel hyperparameters:")
             f.write(f"\nType: {self.rnn_type}")
             for param_name, param in zip(self.mdl_parameter_names, self.mdl_parameters):
@@ -353,7 +352,7 @@ class rnn_trainer:
                 f.write(f"\n{item}: {value}")
         
         # Save the test residuals as a .txt file
-        np.save(f"{self.fileloc_model}{modelname}_residuals", np.array(self.residuals_tst).reshape((-1, self.output_steps)))
+        np.save(f"{self.f_model}{modelname}_residuals", np.array(self.residuals_tst).reshape((-1, self.output_steps)))
         
         # Save a plot of the training performance as a .png file
         fig = plt.figure(figsize=(10,6))
@@ -363,7 +362,7 @@ class rnn_trainer:
             plt.plot(self.loss_tst[:,0], self.loss_tst[:,1], 'bo', fillstyle='full')
             plt.plot([0, self.total_iters], [self.rmse_final, self.rmse_final], 'b-')
             for i in range(len(self.loss_tst)):
-                plt.text(self.loss_tst[i,0] + 5, self.loss_tst[i,1], i + 3, fontsize=10)
+                plt.text(self.loss_tst[i,0] + 1, self.loss_tst[i,1], i + 3, fontsize=10)
         else:
             plt.plot(self.loss_tst[-1,0], self.loss_tst[-1,1], 'bo', fillstyle='full')
             plt.plot([0, self.total_iters], [self.rmse_final, self.rmse_final], 'b-')
@@ -373,10 +372,10 @@ class rnn_trainer:
         plt.ylabel('RMSE')
         plt.legend(['Training', 'Validation', 'Test (block)', 'Test (mean)'])
         fig.set_dpi(100.)
-        plt.savefig(f"{self.fileloc_model}{modelname}.png")
+        plt.savefig(f"{self.f_model}{modelname}.png")
         
         # Save the training performance data as a .npy file
-        np.save(f"{self.fileloc_model}{modelname}_perf",
+        np.save(f"{self.f_model}{modelname}_perf",
                 np.array((self.total_iters + 1,
                           self.loss_trn,
                           self.loss_val,
@@ -394,9 +393,10 @@ if __name__ == '__main__':
     # of them
     for algo, layer, hidden in [("GRU", 2, 32), ("GRU", 3, 32), ("GRU", 4, 32),
                                 ("LSTM", 2, 32), ("LSTM", 3, 32), ("LSTM", 4, 32)]:
-            trainer = rnn_trainer(algo, fileloc_data, fileloc_model)
+            trainer = rnn_trainer(algo, f_data, f_model)
             trainer.initialize(
                                training_data_filename="TRAIN_1707-2009_45x7_n.pt",
+                               master_values_filename="norm_values_2401-2401_45x7.pt",
                                batch_size=64,
                                output_steps=15,
                                num_training_blocks=12,

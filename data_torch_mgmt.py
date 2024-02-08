@@ -8,13 +8,8 @@ from torchdata.datapipes.iter import IterableWrapper
 from data_import_mgmt import func_year_frac
 
 # File locations
-f_root = "/home/user1/Documents/ML_DWT/"
 f_data = "Data/"
-f_torch = "Torch/"
-fileloc = f"{f_root}{f_data}"
-fileloc_torch = f"{f_root}{f_data}{f_torch}"
-filename_npy_mod = "stn_1707_2111_decimal_mod.npy"
-start_date, end_date = '1707', '2111'
+f_torch = "Data/Torch/"
     
 # Torch parameters
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -45,10 +40,10 @@ torch.set_default_tensor_type(torch.DoubleTensor)
 
 
 # Function to create 3D tensors of size (examples, steps, dims) for training RNNs
-def func_make_rnn_tensors(total_steps=45, discontinuous_steps=5, additional_vars=[]):
+def func_make_rnn_tensors(file_npy_mod, start_date, end_date, total_steps=45, discontinuous_steps=5):
     
     # Load data and create a PyTorch tensor
-    data_np = np.load(fileloc + filename_npy_mod)
+    data_np = np.load(f_data + file_npy_mod)
     data_len, total_dims = data_np.shape    
     data_pt = torch.tensor(data_np, dtype=torch.float64, device=device)
     
@@ -95,16 +90,16 @@ def func_make_rnn_tensors(total_steps=45, discontinuous_steps=5, additional_vars
     
     # Save tensor
     filename = f"TEMP_{start_date}-{end_date}_{total_steps}x{total_dims}.pt"
-    torch.save(tensor_pt, fileloc_torch + filename)
-    print(f'Tensor saved to {fileloc_torch}{filename}.\n')
+    torch.save(tensor_pt, f_torch + filename)
+    print(f'Tensor saved to {f_torch}{filename}.\n')
     
     return filename
 
 
 # Function to turn tensor outputs into (out_steps x 1) [as opposed to (out_steps x 3]
 # and remove offline clarifiers
-def func_consolidate_tensors(fileloc_torch, filename, split_date=None):
-    tensor_pt = torch.load(fileloc_torch + filename).to(device='cpu')
+def func_consolidate_tensors(f_torch, filename, start_date, end_date, split_date=None):
+    tensor_pt = torch.load(f_torch + filename).to(device='cpu')
 
     # Goals here:
     # 1) Remove influent pH, and average the two coagulation basin pH readings
@@ -115,9 +110,6 @@ def func_consolidate_tensors(fileloc_torch, filename, split_date=None):
     # 5) For simplicity, ensure that turbidity_out is at the first index
     # 6) Split the tensor into training/production files (if desired,
     #    in this case we use it for comparing BCV and holdout)
-    
-    # Get dates for filename(s)
-    start_date = tensor_pt[0, 0]
     
     print('Changing tensors from three outputs to one...')
     data_len, total_steps, total_dims = tensor_pt.shape
@@ -164,8 +156,8 @@ def func_consolidate_tensors(fileloc_torch, filename, split_date=None):
     
     # Split into training/production sets if split_date was set
     if split_date is not None:
-        t_train = t[(t[:, -1, 0] < split_date), :, :]
-        t_prod = t[(t[:, -1, 0] >= split_date), :, :]
+        t_train = t[(t[:, -1, 0] < func_year_frac(split_date)), :, :]
+        t_prod = t[(t[:, -1, 0] >= func_year_frac(split_date)), :, :]
         # Remove the date column and move effluent turbidity (index 4) to index 0
         t_train = t_train[:, :, 1:]
         t_train[:, :, [0, 4]] = t_train[:, :, [4, 0]]
@@ -177,73 +169,90 @@ def func_consolidate_tensors(fileloc_torch, filename, split_date=None):
         t[:, :, [0, 4]] = t[:, :, [4, 0]]
     
     # Save
-    finalname = []
+    finalnames = []
     if split_date is not None:
         _, total_steps, final_dims = t_train.shape
         fname1 = f"TRAIN_{start_date}-{mid_date}_{total_steps}x{final_dims}.pt"
         fname2 = f"PROD_{mid_date}-{end_date}_{total_steps}x{final_dims}.pt"
-        torch.save()
-        print(f'Tensors saved to {fileloc_torch}{fname1} and {fileloc_torch}{fname2}.\n')
-        finalname.append(fname1)
-        finalname.append(fname2)
+        torch.save(t_train, f_torch + fname1)
+        torch.save(t_prod, f_torch + fname2)
+        print(f'Tensors saved to {f_torch}{fname1} and {f_torch}{fname2}.\n')
+        finalnames.append(fname1)
+        finalnames.append(fname2)
     else:
         _, total_steps, final_dims = t.shape
         fname1 = f"MOD_{start_date}-{end_date}_{total_steps}x{final_dims}.pt"
-        torch.save(t, fileloc_torch + finalname)
-        print(f'Tensor saved to {fileloc_torch}{finalname}.\n')
-        finalname.append(fname1)
-    return finalname
+        torch.save(t, f_torch + finalname)
+        print(f'Tensor saved to {f_torch}{finalname}.\n')
+        finalnames.append(fname1)
+        
+    return finalnames
   
 
 # Function for 0-1 data normalization
-def func_normalize_variables(fileloc_torch, filename):
-    for file in filename:
-        print('Normalizing variables...')
+def func_normalize_variables(f_torch, filenames):
+    print('Normalizing variables...')
+    files_n = []
+    # Load master file: this will be the first file in the filenames list and
+    # the file on which the normalization calculations are based - 
+    # note that this means that data in the production set can fall slightly
+    # outside of the 0-1 range, but this reflects the realistic nature of future data)
+    t_master = torch.load(f_torch + filenames[0])
+    n_dims = t_master.shape[-1]
+    
+    # Create a new file to contain the max/min values of each variable
+    # to quickly be able to unnormalize them to their original range
+    norm_values = torch.zeros((2, n_dims))
+    # Find min/max value of each variable
+    for i in range(n_dims):
+        norm_values[0, i] = torch.min(t_master[:, :, i])
+        norm_values[1, i] = torch.max(t_master[:, :, i])
+
+    # Save as file to return to easily later
+    f_norm_values = 'norm_values' + filenames[0][filenames[0].find('_'):]
+    torch.save(norm_values, f_torch + f_norm_values)
+    print(f'Normalization values saved to {f_torch}{f_norm_values}.')
+
+    for file in filenames:
         # Load original file
-        t_orig = torch.load(fileloc_torch + file)
+        t_orig = torch.load(f_torch + file)
         # Create empty tensor for normalized variables
         t = torch.empty(t_orig.shape)
-        n_dims = t_orig.shape[-1]
-        
-        # For each variable, find min and max value, then transform
-        # all values of that variable into the range 0-1
+
+        # For each variable, transform all values into the range 0-1
         for i in range(n_dims):
-            minval = torch.min(t_orig[:, :, i])
-            maxval = torch.max(t_orig[:, :, i])
+            minval = norm_values[0, i]
+            maxval = norm_values[1, i]
             t[:, :, i] = (t_orig[:, :, i] - minval)/(maxval - minval)
         
-        # Save as new file with "_n"(ormalized) appended to the filename
-        file = filename.replace('.pt', '_n.pt')
-        torch.save(t, fileloc_torch + file)
-        print(f'Tensor saved to {fileloc_torch}{filename}.\n')
+        # Save as new file with "_n"(ormalized) appended to the file
+        file = file.replace('.pt', '_n.pt')
+        files_n.append(file)
+        torch.save(t, f_torch + file)
+        print(f'Tensor saved to {f_torch}{file}.')
+    
+    return files_n, f_norm_values
     
     
 # Function to return normalized data to original
-def func_unnormalize_variables(data):
+def func_unnormalize_variables(data, mastervalues):
+    # Where data is an array of arbitrary size and mastervalues is a 2x1 vector
+    # representing the min and max values of a given variable
     # Create empty tensor
     unnorm = torch.zeros(data.size())
-    data_len, total_steps, n_dims = data.shape
-    # Load original data
-    t_orig = torch.load(fileloc_torch + 'MASTER_{start_date}-{end_date}_{total_steps}x{n_dims}.pt')
-    
-    # Iterate through all variables
-    for i in range(n_dims):
-        # Find min and max values in original data
-        minval = torch.min(t_orig[:, :, i])
-        maxval = torch.max(t_orig[:, :, i])
-        # Transform back to original values (input data may be a 2D or 3D array)
-        if len(unnorm.shape) == 2:
-            unnorm[:, i] = (data[:, i] * (maxval - minval)) + minval
-        if len(unnorm.shape) == 3:
-            unnorm[:, :, i] = (data[:, :, i] * (maxval - minval)) + minval          
+    # Find min and max values in original data
+    minval = mastervalues[0]
+    maxval = mastervalues[1]
+    # Transform back to original values
+    unnorm = (data * (maxval - minval)) + minval          
 
     return unnorm
     
 
 # Function to load tensors as a 4D array, where the first dimension of the array
 # represents one of n blocks for time series validation
-def func_loader(fileloc_torch, finalname, num_blocks=14):
-    tensor_3d = torch.load(fileloc_torch + finalname).to('cpu')
+def func_loader(f_torch, finalname, num_blocks=14):
+    tensor_3d = torch.load(f_torch + finalname).to('cpu')
     num_pts, total_steps, total_dims = tensor_3d.shape
     last_pt = num_pts - (num_pts % num_blocks) # <num_blocks pts are lost
     pts_per_block = int(last_pt / num_blocks)
@@ -267,8 +276,11 @@ def func_leap_year(date):
 
 #%% MAIN
 if __name__ == '__main__':
-    total_steps, discontinuous_steps, additional_vars = 45, 5, []
-    filename = func_make_rnn_tensors(total_steps, discontinuous_steps, additional_vars)
-    finalname = func_consolidate_tensors(fileloc_torch, filename, func_split_date='2020-09-01 00:00')
+    file_npy_mod = "stn_1707-2111_decimal_mod.npy"
+    start_date = file_npy_mod[file_npy_mod.find('_')+1:file_npy_mod.find('_')+5]
+    end_date = file_npy_mod[file_npy_mod.find('-')+1:file_npy_mod.find('-')+5]
+    total_steps, discontinuous_steps = 45, 5
+    filename = func_make_rnn_tensors(file_npy_mod, start_date, end_date, total_steps, discontinuous_steps)
+    finalname = func_consolidate_tensors(f_torch, filename, start_date, end_date, split_date='2020-09-01 00:00')
     # split_date must be in the form YYYY-MM-DD HH-MM
-    func_normalize_variables(fileloc_torch, finalname)
+    func_normalize_variables(f_torch, finalname)
